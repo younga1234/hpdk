@@ -257,22 +257,25 @@ impl TradingStrategy {
             None => return Ok(false),
         };
 
-        let ticker = &position.ticker;
-        let current_price = self.client.get_current_price(ticker).await?;
+        let ticker = position.ticker.clone();
+        let current_price = self.client.get_current_price(&ticker).await?;
 
         // 트레일링 스톱 (활성화 시)
         if self.config.trailing_stop_enabled {
             position.enable_trailing_if_profit(current_price, self.config.trailing_stop_trigger);
-            if position.update_trailing_stop(current_price, self.config.trailing_stop_percent) {
+            let highest_price = position.highest_price;
+            let trailing_percent = self.config.trailing_stop_percent;
+            if position.update_trailing_stop(current_price, trailing_percent) {
                 self.position = Some(position.clone());
-                return self.execute_sell(&format!("트레일링 스톱 (최고가 {}원 대비 {}% 하락)", position.highest_price, self.config.trailing_stop_percent)).await;
+                return self.execute_sell(&format!("트레일링 스톱 (최고가 {:.0}원 대비 {}% 하락)", highest_price, trailing_percent)).await;
             }
             self.position = Some(position.clone());
         }
 
         let (status, profit_rate, reason) = self.analyzer.analyze_position(current_price, position.avg_price, self.config.target_profit, self.config.stop_loss);
         let profit_amount = position.get_profit_amount(current_price, self.config.upbit_fee);
-        log::info!("[포지션] {} | 평균가: {:.0}원 | 현재가: {:.0}원 | 수익: {:+.2}% ({:+.0}원)", ticker, position.avg_price, current_price, profit_rate, profit_amount);
+        let avg_price = position.avg_price;
+        log::info!("[포지션] {} | 평균가: {:.0}원 | 현재가: {:.0}원 | 수익: {:+.2}% ({:+.0}원)", ticker, avg_price, current_price, profit_rate, profit_amount);
 
         if status == PositionStatus::TakeProfit || status == PositionStatus::StopLoss {
             return self.execute_sell(&reason).await;

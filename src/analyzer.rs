@@ -1,5 +1,5 @@
 use crate::websocket::Candle;
-use crate::indicators::{self, IndicatorSignals};
+use crate::indicators::{IndicatorSignals, SignalType};
 use anyhow::Result;
 
 /// 포지션 상태
@@ -82,35 +82,23 @@ impl CandleAnalyzer {
         let is_reversal = self.is_reversal_pattern(candles);
 
         // 8. 기술적 지표 분석
-        let indicator_signals = indicators::analyze_all_indicators(candles);
+        let indicator_signals = IndicatorSignals::from_candles(candles);
 
         // RSI 과매수/과매도 확인
-        let rsi_ok = match indicator_signals.rsi_signal {
-            Some(ref signal) => signal != "과매수", // 과매수 구간은 피함
-            None => true, // RSI 계산 불가 시 통과
-        };
+        let rsi_ok = indicator_signals.rsi_signal != SignalType::Sell; // Sell = 과매수 구간 피함
 
         if !rsi_ok {
             return (false, Some("RSI 과매수 구간".to_string()));
         }
 
         // MACD 상승 신호 확인
-        let macd_bullish = match indicator_signals.macd_signal {
-            Some(ref signal) => signal == "상승" || signal == "골든크로스",
-            None => false,
-        };
+        let macd_bullish = matches!(indicator_signals.macd_signal, SignalType::Buy | SignalType::StrongBuy);
 
         // 볼린저 밴드 하단 근처에서 반등 (매수 기회)
-        let bb_buy_signal = match indicator_signals.bb_signal {
-            Some(ref signal) => signal == "하단돌파" || signal == "하단근접",
-            None => false,
-        };
+        let bb_buy_signal = matches!(indicator_signals.bollinger_signal, SignalType::Buy | SignalType::StrongBuy);
 
         // 이동평균선 골든크로스
-        let ma_cross_bullish = match indicator_signals.ma_cross_signal {
-            Some(ref signal) => signal == "골든크로스",
-            None => false,
-        };
+        let ma_cross_bullish = indicator_signals.ma_cross.as_deref() == Some("골든크로스");
 
         // 지표 점수 계산 (0~4점)
         let mut indicator_score = 0;
@@ -123,8 +111,8 @@ impl CandleAnalyzer {
         if ma_cross_bullish {
             indicator_score += 1;
         }
-        if matches!(indicator_signals.rsi_signal.as_deref(), Some("과매도")) {
-            indicator_score += 1; // 과매도는 추가 점수
+        if matches!(indicator_signals.rsi_signal, SignalType::Buy | SignalType::StrongBuy) {
+            indicator_score += 1; // 과매도(Buy signal)는 추가 점수
         }
 
         // 최소 2개 이상의 긍정 신호 필요
@@ -133,7 +121,7 @@ impl CandleAnalyzer {
         }
 
         let reason = format!(
-            "거래량: {:.2}배 (평균 대비 {:.2}배), 가격: {:.2}% → {:.2}%, 단기상승: {:.2}%, 반등: {}, 지표점수: {}/4 | RSI: {}, MACD: {}, BB: {}, MA: {}",
+            "거래량: {:.2}배 (평균 대비 {:.2}배), 가격: {:.2}% → {:.2}%, 단기상승: {:.2}%, 반등: {}, 지표점수: {}/4 | RSI: {:?}, MACD: {:?}, BB: {:?}, MA: {}",
             volume_ratio,
             volume_vs_avg,
             prev_price_change,
@@ -141,10 +129,10 @@ impl CandleAnalyzer {
             short_term_change,
             if is_reversal { "O" } else { "X" },
             indicator_score,
-            indicator_signals.rsi_signal.as_deref().unwrap_or("-"),
-            indicator_signals.macd_signal.as_deref().unwrap_or("-"),
-            indicator_signals.bb_signal.as_deref().unwrap_or("-"),
-            indicator_signals.ma_cross_signal.as_deref().unwrap_or("-"),
+            indicator_signals.rsi_signal,
+            indicator_signals.macd_signal,
+            indicator_signals.bollinger_signal,
+            indicator_signals.ma_cross.as_deref().unwrap_or("-"),
         );
 
         // 반등 패턴이거나 거래량이 매우 높거나 지표 점수가 3점 이상이면 매수

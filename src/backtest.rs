@@ -100,8 +100,8 @@ impl BacktestEngine {
 
                     self.trades.push(Trade {
                         ticker: current_candle.ticker.clone(),
-                        entry_time: candles[entry_idx].timestamp,
-                        exit_time: current_candle.timestamp,
+                        entry_time: candles[entry_idx].start_time,
+                        exit_time: current_candle.start_time,
                         entry_price: avg_price,
                         exit_price: current_price,
                         amount,
@@ -162,8 +162,8 @@ impl BacktestEngine {
 
             self.trades.push(Trade {
                 ticker: last_candle.ticker.clone(),
-                entry_time: candles[entry_idx].timestamp,
-                exit_time: last_candle.timestamp,
+                entry_time: candles[entry_idx].start_time,
+                exit_time: last_candle.start_time,
                 entry_price: avg_price,
                 exit_price: current_price,
                 amount,

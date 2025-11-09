@@ -195,7 +195,7 @@ async fn main() -> Result<()> {
 
     // GUI 실행 (메인 스레드)
     log::info!("GUI 대시보드 실행...");
-    run_dashboard(dashboard_state)?;
+    run_dashboard(dashboard_state).map_err(|e| anyhow::anyhow!("GUI 에러: {}", e))?;
 
     Ok(())
 }

@@ -193,7 +193,7 @@ impl Clone for DashboardState {
 }
 
 /// GUI 실행 함수
-pub fn run_dashboard(state: Arc<RwLock<DashboardState>>) -> Result<(), eframe::Error> {
+pub fn run_dashboard(state: Arc<RwLock<DashboardState>>) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([800.0, 600.0])
@@ -204,6 +204,6 @@ pub fn run_dashboard(state: Arc<RwLock<DashboardState>>) -> Result<(), eframe::E
     eframe::run_native(
         "Upbit Trading Bot",
         options,
-        Box::new(|_cc| Ok(Box::new(TradingDashboard::new(state)))),
+        Box::new(|_cc| Box::new(TradingDashboard::new(state))),
     )
 }

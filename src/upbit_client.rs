@@ -1,0 +1,299 @@
+use anyhow::Result;
+use base64::{Engine as _, engine::general_purpose};
+use hmac::{Hmac, Mac};
+use reqwest::{Client, header};
+use serde::{Deserialize, Serialize};
+use sha2::Sha512;
+use std::time::{SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
+
+type HmacSha512 = Hmac<Sha512>;
+
+/// Upbit API 클라이언트
+#[derive(Clone)]
+pub struct UpbitClient {
+    access_key: String,
+    secret_key: String,
+    client: Client,
+    base_url: String,
+}
+
+/// 잔액 정보
+#[derive(Debug, Deserialize, Clone)]
+pub struct Balance {
+    pub currency: String,
+    pub balance: String,
+    pub locked: String,
+    pub avg_buy_price: String,
+    pub avg_buy_price_modified: bool,
+    pub unit_currency: String,
+}
+
+/// 주문 정보
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct Order {
+    pub uuid: String,
+    pub side: String,
+    pub ord_type: String,
+    pub price: Option<String>,
+    pub state: String,
+    pub market: String,
+    pub created_at: String,
+    pub volume: Option<String>,
+    pub remaining_volume: Option<String>,
+    pub reserved_fee: Option<String>,
+    pub remaining_fee: Option<String>,
+    pub paid_fee: Option<String>,
+    pub locked: Option<String>,
+    pub executed_volume: Option<String>,
+    pub trades_count: Option<i32>,
+}
+
+/// 현재가 정보
+#[derive(Debug, Deserialize, Clone)]
+pub struct Ticker {
+    pub market: String,
+    pub trade_price: f64,
+    pub trade_volume: f64,
+    pub acc_trade_price_24h: f64,
+    pub acc_trade_volume_24h: f64,
+    pub prev_closing_price: f64,
+    pub change_rate: f64,
+}
+
+/// 마켓 코드 정보
+#[derive(Debug, Deserialize, Clone)]
+pub struct MarketCode {
+    pub market: String,
+    pub korean_name: String,
+    pub english_name: String,
+}
+
+/// 캔들 데이터
+#[derive(Debug, Deserialize, Clone)]
+pub struct Candle {
+    pub market: String,
+    pub candle_date_time_utc: String,
+    pub candle_date_time_kst: String,
+    pub opening_price: f64,
+    pub high_price: f64,
+    pub low_price: f64,
+    pub trade_price: f64,
+    pub timestamp: u64,
+    pub candle_acc_trade_price: f64,
+    pub candle_acc_trade_volume: f64,
+    pub unit: Option<i32>,
+}
+
+impl UpbitClient {
+    /// 새로운 Upbit 클라이언트 생성
+    pub fn new(access_key: String, secret_key: String) -> Self {
+        Self {
+            access_key,
+            secret_key,
+            client: Client::new(),
+            base_url: "https://api.upbit.com/v1".to_string(),
+        }
+    }
+
+    /// JWT 토큰 생성
+    fn create_token(&self, query: Option<&str>) -> Result<String> {
+        let nonce = Uuid::new_v4().to_string();
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)?
+            .as_millis();
+
+        let mut payload = format!(
+            r#"{{"access_key":"{}","nonce":"{}","timestamp":{}}}"#,
+            self.access_key, nonce, timestamp
+        );
+
+        // 쿼리 문자열이 있으면 추가
+        if let Some(q) = query {
+            let mut mac = HmacSha512::new_from_slice(self.secret_key.as_bytes())?;
+            mac.update(q.as_bytes());
+            let query_hash = hex::encode(mac.finalize().into_bytes());
+
+            payload = format!(
+                r#"{{"access_key":"{}","nonce":"{}","timestamp":{},"query_hash":"{}","query_hash_alg":"SHA512"}}"#,
+                self.access_key, nonce, timestamp, query_hash
+            );
+        }
+
+        let header = r#"{"alg":"HS256","typ":"JWT"}"#;
+        let header_b64 = general_purpose::URL_SAFE_NO_PAD.encode(header);
+        let payload_b64 = general_purpose::URL_SAFE_NO_PAD.encode(&payload);
+
+        let message = format!("{}.{}", header_b64, payload_b64);
+
+        let mut mac = HmacSha512::new_from_slice(self.secret_key.as_bytes())?;
+        mac.update(message.as_bytes());
+        let signature = general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+
+        Ok(format!("{}.{}", message, signature))
+    }
+
+    /// 계정 정보 조회 (모든 잔액)
+    pub async fn get_balances(&self) -> Result<Vec<Balance>> {
+        let token = self.create_token(None)?;
+        let url = format!("{}/accounts", self.base_url);
+
+        let response = self
+            .client
+            .get(&url)
+            .header(header::AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        let balances: Vec<Balance> = response.json().await?;
+        Ok(balances)
+    }
+
+    /// 특정 통화 잔액 조회
+    pub async fn get_balance(&self, currency: &str) -> Result<f64> {
+        let balances = self.get_balances().await?;
+
+        for balance in balances {
+            if balance.currency == currency {
+                return Ok(balance.balance.parse()?);
+            }
+        }
+
+        Ok(0.0)
+    }
+
+    /// 평균 매수가 조회
+    pub async fn get_avg_buy_price(&self, currency: &str) -> Result<Option<f64>> {
+        let balances = self.get_balances().await?;
+
+        for balance in balances {
+            if balance.currency == currency {
+                return Ok(Some(balance.avg_buy_price.parse()?));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// 시장가 매수
+    pub async fn buy_market_order(&self, market: &str, price: f64) -> Result<Order> {
+        let price = price.floor() as i64; // 정수로 변환
+
+        if price < 5000 {
+            anyhow::bail!("최소 주문 금액은 5,000원입니다 (입력: {}원)", price);
+        }
+
+        let query = format!("market={}&side=bid&ord_type=price&price={}", market, price);
+        let token = self.create_token(Some(&query))?;
+
+        let url = format!("{}/orders", self.base_url);
+
+        let price_str = price.to_string();
+        let mut params = std::collections::HashMap::new();
+        params.insert("market", market);
+        params.insert("side", "bid");
+        params.insert("ord_type", "price");
+        params.insert("price", &price_str);
+
+        let response = self
+            .client
+            .post(&url)
+            .header(header::AUTHORIZATION, format!("Bearer {}", token))
+            .json(&params)
+            .send()
+            .await?;
+
+        let order: Order = response.json().await?;
+        Ok(order)
+    }
+
+    /// 시장가 매도
+    pub async fn sell_market_order(&self, market: &str, volume: f64) -> Result<Order> {
+        let query = format!("market={}&side=ask&ord_type=market&volume={}", market, volume);
+        let token = self.create_token(Some(&query))?;
+
+        let url = format!("{}/orders", self.base_url);
+
+        let volume_str = volume.to_string();
+        let mut params = std::collections::HashMap::new();
+        params.insert("market", market);
+        params.insert("side", "ask");
+        params.insert("ord_type", "market");
+        params.insert("volume", &volume_str);
+
+        let response = self
+            .client
+            .post(&url)
+            .header(header::AUTHORIZATION, format!("Bearer {}", token))
+            .json(&params)
+            .send()
+            .await?;
+
+        let order: Order = response.json().await?;
+        Ok(order)
+    }
+
+    /// 마켓 코드 조회
+    pub async fn get_market_codes(&self) -> Result<Vec<MarketCode>> {
+        let url = format!("{}/market/all", self.base_url);
+
+        let response = self.client.get(&url).send().await?;
+        let markets: Vec<MarketCode> = response.json().await?;
+
+        Ok(markets)
+    }
+
+    /// KRW 마켓 코드 조회
+    pub async fn get_krw_markets(&self) -> Result<Vec<String>> {
+        let markets = self.get_market_codes().await?;
+
+        let krw_markets: Vec<String> = markets
+            .into_iter()
+            .filter(|m| m.market.starts_with("KRW-"))
+            .map(|m| m.market)
+            .collect();
+
+        Ok(krw_markets)
+    }
+
+    /// 현재가 정보 조회
+    pub async fn get_ticker(&self, markets: &[String]) -> Result<Vec<Ticker>> {
+        let markets_str = markets.join(",");
+        let url = format!("{}/ticker?markets={}", self.base_url, markets_str);
+
+        let response = self.client.get(&url).send().await?;
+        let tickers: Vec<Ticker> = response.json().await?;
+
+        Ok(tickers)
+    }
+
+    /// 단일 마켓 현재가 조회
+    pub async fn get_current_price(&self, market: &str) -> Result<f64> {
+        let tickers = self.get_ticker(&[market.to_string()]).await?;
+
+        if let Some(ticker) = tickers.first() {
+            Ok(ticker.trade_price)
+        } else {
+            anyhow::bail!("현재가 조회 실패: {}", market)
+        }
+    }
+
+    /// 분봉 조회
+    pub async fn get_candles_minutes(
+        &self,
+        market: &str,
+        unit: i32,
+        count: i32,
+    ) -> Result<Vec<Candle>> {
+        let url = format!(
+            "{}/candles/minutes/{}?market={}&count={}",
+            self.base_url, unit, market, count
+        );
+
+        let response = self.client.get(&url).send().await?;
+        let candles: Vec<Candle> = response.json().await?;
+
+        Ok(candles)
+    }
+}
+

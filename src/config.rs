@@ -1,0 +1,146 @@
+use anyhow::{Context, Result};
+use serde::Deserialize;
+use std::env;
+
+/// 봇 설정 구조체
+#[derive(Debug, Clone)]
+pub struct Config {
+    // API 인증 정보
+    pub upbit_access_key: String,
+    pub upbit_secret_key: String,
+
+    // 거래 설정
+    pub target_profit: f64,      // 목표 수익률 (%)
+    pub stop_loss: f64,          // 손절 라인 (%)
+    pub trade_amount: f64,       // 거래 금액 비율 (0.0 ~ 1.0)
+
+    // 모니터링 설정
+    pub candle_interval: u64,    // 캔들 간격 (분)
+    pub min_volume_increase: f64, // 최소 거래량 증가율 (배수)
+    pub min_price_change: f64,   // 최소 가격 변화율 (%)
+
+    // 리스크 관리
+    pub max_position: usize,     // 최대 동시 보유 포지션 수
+    pub min_krw_balance: f64,    // 최소 보유 원화 잔액
+
+    // 상수
+    pub upbit_fee: f64,          // Upbit 수수료 (0.05%)
+}
+
+impl Config {
+    /// 환경 변수에서 설정 로드
+    pub fn from_env() -> Result<Self> {
+        dotenv::dotenv().ok();
+
+        let config = Config {
+            upbit_access_key: env::var("UPBIT_ACCESS_KEY")
+                .context("UPBIT_ACCESS_KEY가 설정되지 않았습니다")?,
+            upbit_secret_key: env::var("UPBIT_SECRET_KEY")
+                .context("UPBIT_SECRET_KEY가 설정되지 않았습니다")?,
+
+            target_profit: env::var("TARGET_PROFIT")
+                .unwrap_or_else(|_| "3.0".to_string())
+                .parse()
+                .context("TARGET_PROFIT 파싱 실패")?,
+
+            stop_loss: env::var("STOP_LOSS")
+                .unwrap_or_else(|_| "2.0".to_string())
+                .parse()
+                .context("STOP_LOSS 파싱 실패")?,
+
+            trade_amount: env::var("TRADE_AMOUNT")
+                .unwrap_or_else(|_| "0.9".to_string())
+                .parse()
+                .context("TRADE_AMOUNT 파싱 실패")?,
+
+            candle_interval: env::var("CANDLE_INTERVAL")
+                .unwrap_or_else(|_| "5".to_string())
+                .parse()
+                .context("CANDLE_INTERVAL 파싱 실패")?,
+
+            min_volume_increase: env::var("MIN_VOLUME_INCREASE")
+                .unwrap_or_else(|_| "1.1".to_string())
+                .parse()
+                .context("MIN_VOLUME_INCREASE 파싱 실패")?,
+
+            min_price_change: env::var("MIN_PRICE_CHANGE")
+                .unwrap_or_else(|_| "0.5".to_string())
+                .parse()
+                .context("MIN_PRICE_CHANGE 파싱 실패")?,
+
+            max_position: env::var("MAX_POSITION")
+                .unwrap_or_else(|_| "1".to_string())
+                .parse()
+                .context("MAX_POSITION 파싱 실패")?,
+
+            min_krw_balance: env::var("MIN_KRW_BALANCE")
+                .unwrap_or_else(|_| "10000".to_string())
+                .parse()
+                .context("MIN_KRW_BALANCE 파싱 실패")?,
+
+            upbit_fee: 0.0005, // 0.05%
+        };
+
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// 설정 유효성 검증
+    fn validate(&self) -> Result<()> {
+        if self.upbit_access_key.is_empty() || self.upbit_secret_key.is_empty() {
+            anyhow::bail!("API 키가 비어있습니다");
+        }
+
+        if self.target_profit <= 0.0 {
+            anyhow::bail!("목표 수익률은 0보다 커야 합니다");
+        }
+
+        if self.stop_loss <= 0.0 {
+            anyhow::bail!("손절 라인은 0보다 커야 합니다");
+        }
+
+        if self.trade_amount <= 0.0 || self.trade_amount > 1.0 {
+            anyhow::bail!("거래 금액 비율은 0과 1 사이여야 합니다");
+        }
+
+        if self.candle_interval == 0 {
+            anyhow::bail!("캔들 간격은 0보다 커야 합니다");
+        }
+
+        if self.min_volume_increase <= 1.0 {
+            anyhow::bail!("최소 거래량 증가율은 1보다 커야 합니다");
+        }
+
+        if self.max_position == 0 {
+            anyhow::bail!("최대 포지션 수는 0보다 커야 합니다");
+        }
+
+        Ok(())
+    }
+
+    /// 설정 정보 출력
+    pub fn display(&self) -> String {
+        format!(
+            r#"
+===== 봇 설정 정보 =====
+목표 수익률: {}%
+손절 라인: {}%
+거래 금액 비율: {:.0}%
+캔들 간격: {}분
+최소 거래량 증가율: {}배
+최소 가격 변화율: {}%
+최대 포지션 수: {}
+최소 KRW 잔액: {:.0}원
+========================
+"#,
+            self.target_profit,
+            self.stop_loss,
+            self.trade_amount * 100.0,
+            self.candle_interval,
+            self.min_volume_increase,
+            self.min_price_change,
+            self.max_position,
+            self.min_krw_balance
+        )
+    }
+}

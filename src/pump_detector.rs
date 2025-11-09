@@ -169,8 +169,8 @@ impl PumpDetector {
         let recent_volatility: f64 = candles[candles.len() - 10..]
             .windows(2)
             .map(|w| {
-                let change = ((w[1].close - w[0].close) / w[0].close).abs();
-                change
+                
+                ((w[1].close - w[0].close) / w[0].close).abs()
             })
             .sum::<f64>()
             / 9.0;
@@ -179,8 +179,8 @@ impl PumpDetector {
         let base_volatility: f64 = candles[candles.len() - 20..candles.len() - 10]
             .windows(2)
             .map(|w| {
-                let change = ((w[1].close - w[0].close) / w[0].close).abs();
-                change
+                
+                ((w[1].close - w[0].close) / w[0].close).abs()
             })
             .sum::<f64>()
             / 9.0;

@@ -4,10 +4,54 @@ use hmac::{Hmac, Mac};
 use reqwest::{Client, header};
 use serde::{Deserialize, Serialize};
 use sha2::Sha512;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH, Duration};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 type HmacSha512 = Hmac<Sha512>;
+
+/// Upbit API 에러 응답
+#[derive(Debug, Deserialize)]
+struct UpbitErrorResponse {
+    error: UpbitError,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpbitError {
+    message: String,
+    name: String,
+}
+
+/// Rate Limiter (간단한 구현)
+struct RateLimiter {
+    last_request: Arc<Mutex<SystemTime>>,
+    min_interval_ms: u64,
+}
+
+impl RateLimiter {
+    fn new(requests_per_second: u64) -> Self {
+        Self {
+            last_request: Arc::new(Mutex::new(SystemTime::now())),
+            min_interval_ms: 1000 / requests_per_second,
+        }
+    }
+
+    async fn wait(&self) {
+        let mut last = self.last_request.lock().await;
+        let now = SystemTime::now();
+
+        if let Ok(elapsed) = now.duration_since(*last) {
+            let elapsed_ms = elapsed.as_millis() as u64;
+            if elapsed_ms < self.min_interval_ms {
+                let sleep_ms = self.min_interval_ms - elapsed_ms;
+                tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
+            }
+        }
+
+        *last = SystemTime::now();
+    }
+}
 
 /// Upbit API 클라이언트
 #[derive(Clone)]
@@ -16,6 +60,7 @@ pub struct UpbitClient {
     secret_key: String,
     client: Client,
     base_url: String,
+    rate_limiter: Arc<RateLimiter>,
 }
 
 /// 잔액 정보
@@ -99,7 +144,7 @@ impl Candle {
             volume: self.candle_acc_trade_volume,
             acc_trade_price: self.candle_acc_trade_price,
             start_time: DateTime::from_timestamp_millis(self.timestamp as i64)
-                .unwrap_or_else(|| Utc::now()),
+                .unwrap_or_else(Utc::now),
             tick_count: 0,
         }
     }
@@ -108,12 +153,50 @@ impl Candle {
 impl UpbitClient {
     /// 새로운 Upbit 클라이언트 생성
     pub fn new(access_key: String, secret_key: String) -> Self {
+        // 타임아웃 설정: 연결 10초, 읽기 30초
+        let client = Client::builder()
+            .timeout(Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(10))
+            .build()
+            .expect("Failed to create HTTP client");
+
+        // Rate Limiter: 초당 8회 (Upbit 공식 제한: 초당 10회, 여유 있게 설정)
+        let rate_limiter = Arc::new(RateLimiter::new(8));
+
         Self {
             access_key,
             secret_key,
-            client: Client::new(),
+            client,
             base_url: "https://api.upbit.com/v1".to_string(),
+            rate_limiter,
         }
+    }
+
+    /// API 응답 처리 (에러 체크 포함)
+    async fn handle_response<T: serde::de::DeserializeOwned>(
+        &self,
+        response: reqwest::Response,
+    ) -> Result<T> {
+        let status = response.status();
+
+        if !status.is_success() {
+            let error_text = response.text().await?;
+
+            // Upbit API 에러 형식 파싱 시도
+            if let Ok(upbit_error) = serde_json::from_str::<UpbitErrorResponse>(&error_text) {
+                anyhow::bail!(
+                    "Upbit API 에러 [{}]: {}",
+                    upbit_error.error.name,
+                    upbit_error.error.message
+                );
+            }
+
+            // 일반 HTTP 에러
+            anyhow::bail!("HTTP {} 에러: {}", status.as_u16(), error_text);
+        }
+
+        let data = response.json::<T>().await?;
+        Ok(data)
     }
 
     /// JWT 토큰 생성
@@ -197,6 +280,8 @@ impl UpbitClient {
 
     /// 시장가 매수
     pub async fn buy_market_order(&self, market: &str, price: f64) -> Result<Order> {
+        self.rate_limiter.wait().await;
+
         let price = price.floor() as i64; // 정수로 변환
 
         if price < 5000 {
@@ -215,6 +300,8 @@ impl UpbitClient {
         params.insert("ord_type", "price");
         params.insert("price", &price_str);
 
+        log::debug!("매수 주문 요청: {} - {}원", market, price);
+
         let response = self
             .client
             .post(&url)
@@ -223,23 +310,28 @@ impl UpbitClient {
             .send()
             .await?;
 
-        let order: Order = response.json().await?;
-        Ok(order)
+        self.handle_response(response).await
     }
 
     /// 시장가 매도
     pub async fn sell_market_order(&self, market: &str, volume: f64) -> Result<Order> {
-        let query = format!("market={}&side=ask&ord_type=market&volume={}", market, volume);
+        self.rate_limiter.wait().await;
+
+        // 소수점 자리수 조정 (코인별로 다를 수 있지만 일반적으로 8자리)
+        let volume_str = format!("{:.8}", volume);
+
+        let query = format!("market={}&side=ask&ord_type=market&volume={}", market, volume_str);
         let token = self.create_token(Some(&query))?;
 
         let url = format!("{}/orders", self.base_url);
 
-        let volume_str = volume.to_string();
         let mut params = std::collections::HashMap::new();
         params.insert("market", market);
         params.insert("side", "ask");
         params.insert("ord_type", "market");
-        params.insert("volume", &volume_str);
+        params.insert("volume", volume_str.as_str());
+
+        log::debug!("매도 주문 요청: {} - {} 개", market, volume_str);
 
         let response = self
             .client
@@ -249,8 +341,26 @@ impl UpbitClient {
             .send()
             .await?;
 
-        let order: Order = response.json().await?;
-        Ok(order)
+        self.handle_response(response).await
+    }
+
+    /// 주문 상태 조회
+    pub async fn get_order(&self, uuid: &str) -> Result<Order> {
+        self.rate_limiter.wait().await;
+
+        let query = format!("uuid={}", uuid);
+        let token = self.create_token(Some(&query))?;
+
+        let url = format!("{}/order?uuid={}", self.base_url, uuid);
+
+        let response = self
+            .client
+            .get(&url)
+            .header(header::AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        self.handle_response(response).await
     }
 
     /// 마켓 코드 조회
@@ -289,6 +399,8 @@ impl UpbitClient {
 
     /// 단일 마켓 현재가 조회
     pub async fn get_current_price(&self, market: &str) -> Result<f64> {
+        self.rate_limiter.wait().await;
+
         let tickers = self.get_ticker(&[market.to_string()]).await?;
 
         if let Some(ticker) = tickers.first() {

@@ -226,20 +226,37 @@ impl TradingStrategy {
             Ok(order) => {
                 log::info!("매수 주문 제출: {} | UUID: {}", ticker, order.uuid);
 
-                // 주문 처리 대기
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-
-                // 실제 매수된 수량과 평균가 확인
+                // 주문 체결 대기 및 확인 (최대 5회 재시도)
                 let ticker_currency = ticker.replace("KRW-", "");
-                let amount = self.client.get_balance(&ticker_currency).await?;
+                let mut amount = 0.0;
+                let mut avg_price = current_price;
+
+                for attempt in 1..=5 {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500 * attempt)).await;
+
+                    // 주문 상태 확인
+                    match self.client.get_order(&order.uuid).await {
+                        Ok(order_status) => {
+                            if order_status.state == "done" {
+                                // 체결 완료
+                                amount = self.client.get_balance(&ticker_currency).await?;
+                                if let Some(price) = self.client.get_avg_buy_price(&ticker_currency).await? {
+                                    avg_price = price;
+                                }
+                                break;
+                            } else if order_status.state == "cancel" {
+                                log::error!("{}: 주문이 취소되었습니다", ticker);
+                                return Ok(false);
+                            }
+                            log::debug!("주문 상태 확인 중... (시도 {}/5, 상태: {})", attempt, order_status.state);
+                        }
+                        Err(e) => {
+                            log::warn!("주문 상태 조회 실패 (시도 {}/5): {}", attempt, e);
+                        }
+                    }
+                }
 
                 if amount > 0.0 {
-                    let avg_price = self
-                        .client
-                        .get_avg_buy_price(&ticker_currency)
-                        .await?
-                        .unwrap_or(current_price);
-
                     // 포지션 생성
                     self.position = Some(Position::new(ticker.to_string(), amount, avg_price));
 
@@ -252,15 +269,15 @@ impl TradingStrategy {
                     );
 
                     log::info!("✅ 매수 완료: {}", ticker);
-                    return Ok(true);
+                    Ok(true)
                 } else {
-                    log::error!("{}: 매수 후 수량 확인 실패", ticker);
-                    return Ok(false);
+                    log::error!("{}: 매수 체결 확인 실패 (5초 초과)", ticker);
+                    Ok(false)
                 }
             }
             Err(e) => {
                 log::error!("{}: 매수 주문 실패 - {}", ticker, e);
-                return Ok(false);
+                Ok(false)
             }
         }
     }
@@ -311,29 +328,59 @@ impl TradingStrategy {
 
         // 시장가 매도 주문
         match self.client.sell_market_order(ticker, amount).await {
-            Ok(_order) => {
-                log::info!(
-                    "[거래실행] {} | SELL | 가격: {:.0}원 | 수량: {:.8} | 총액: {:.0}원",
-                    ticker,
-                    current_price,
-                    amount,
-                    current_price * amount
-                );
+            Ok(order) => {
+                log::info!("매도 주문 제출: {} | UUID: {}", ticker, order.uuid);
 
-                log::info!(
-                    "✅ 매도 완료: {} | 수익률: {:+.2}% | 수익금: {:+.0}원",
-                    ticker,
-                    profit_rate,
-                    profit_amount
-                );
+                // 주문 체결 확인 (최대 5회 재시도)
+                let mut sell_confirmed = false;
+                for attempt in 1..=5 {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500 * attempt)).await;
 
-                // 포지션 초기화
-                self.position = None;
-                return Ok(true);
+                    match self.client.get_order(&order.uuid).await {
+                        Ok(order_status) => {
+                            if order_status.state == "done" {
+                                sell_confirmed = true;
+                                break;
+                            } else if order_status.state == "cancel" {
+                                log::error!("{}: 매도 주문이 취소되었습니다", ticker);
+                                return Ok(false);
+                            }
+                            log::debug!("매도 주문 상태 확인 중... (시도 {}/5, 상태: {})", attempt, order_status.state);
+                        }
+                        Err(e) => {
+                            log::warn!("매도 주문 상태 조회 실패 (시도 {}/5): {}", attempt, e);
+                        }
+                    }
+                }
+
+                if sell_confirmed {
+                    log::info!(
+                        "[거래실행] {} | SELL | 가격: {:.0}원 | 수량: {:.8} | 총액: {:.0}원",
+                        ticker,
+                        current_price,
+                        amount,
+                        current_price * amount
+                    );
+
+                    log::info!(
+                        "✅ 매도 완료: {} | 수익률: {:+.2}% | 수익금: {:+.0}원",
+                        ticker,
+                        profit_rate,
+                        profit_amount
+                    );
+
+                    // 포지션 초기화
+                    self.position = None;
+                    Ok(true)
+                } else {
+                    log::error!("{}: 매도 체결 확인 실패 (타임아웃)", ticker);
+                    // 포지션은 유지 (재시도 가능)
+                    Ok(false)
+                }
             }
             Err(e) => {
                 log::error!("{}: 매도 주문 실패 - {}", ticker, e);
-                return Ok(false);
+                Ok(false)
             }
         }
     }

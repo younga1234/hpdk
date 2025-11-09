@@ -190,6 +190,12 @@ pub struct UpbitWebSocket {
     url: String,
 }
 
+impl Default for UpbitWebSocket {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UpbitWebSocket {
     pub fn new() -> Self {
         Self {

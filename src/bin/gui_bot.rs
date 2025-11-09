@@ -106,7 +106,7 @@ async fn main() -> Result<()> {
             let price = ticker_data.trade_price;
             let volume = ticker_data.trade_volume;
             let timestamp = DateTime::from_timestamp_millis(ticker_data.timestamp as i64)
-                .unwrap_or_else(|| Utc::now());
+                .unwrap_or_else(Utc::now);
 
             // 틱 데이터를 캔들로 집계
             if let Some(_completed_candle) = aggregator_bg

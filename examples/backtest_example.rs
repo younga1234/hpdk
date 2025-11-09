@@ -28,14 +28,19 @@ async fn main() -> anyhow::Result<()> {
     let market = "KRW-BTC"; // 비트코인으로 테스트
     println!("마켓: {}", market);
 
-    // 과거 데이터 가져오기 (최근 200개 캔들)
+    // 과거 데이터 가져오기 (최근 200개 5분봉 캔들)
     println!("과거 데이터 로딩 중...");
-    let candles = client.get_candles(market, 200).await?;
-    println!("로드된 캔들 수: {}", candles.len());
+    let api_candles = client.get_candles_minutes(market, 5, 200).await?;
+    println!("로드된 캔들 수: {}", api_candles.len());
 
-    if candles.len() < 20 {
+    if api_candles.len() < 20 {
         anyhow::bail!("백테스팅을 위해 최소 20개 이상의 캔들이 필요합니다");
     }
+
+    // API 캔들을 WebSocket 캔들 형식으로 변환
+    let candles: Vec<_> = api_candles.iter()
+        .map(|c| c.to_websocket_candle())
+        .collect();
 
     // 분석기 초기화
     let analyzer = CandleAnalyzer::new(

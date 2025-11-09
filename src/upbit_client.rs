@@ -69,7 +69,7 @@ pub struct MarketCode {
     pub english_name: String,
 }
 
-/// 캔들 데이터
+/// 캔들 데이터 (API 응답)
 #[derive(Debug, Deserialize, Clone)]
 pub struct Candle {
     pub market: String,
@@ -83,6 +83,26 @@ pub struct Candle {
     pub candle_acc_trade_price: f64,
     pub candle_acc_trade_volume: f64,
     pub unit: Option<i32>,
+}
+
+impl Candle {
+    /// upbit_client::Candle을 websocket::Candle로 변환
+    pub fn to_websocket_candle(&self) -> crate::websocket::Candle {
+        use chrono::{DateTime, Utc};
+
+        crate::websocket::Candle {
+            ticker: self.market.clone(),
+            open: self.opening_price,
+            high: self.high_price,
+            low: self.low_price,
+            close: self.trade_price,
+            volume: self.candle_acc_trade_volume,
+            acc_trade_price: self.candle_acc_trade_price,
+            start_time: DateTime::from_timestamp_millis(self.timestamp as i64)
+                .unwrap_or_else(|| Utc::now()),
+            tick_count: 0,
+        }
+    }
 }
 
 impl UpbitClient {

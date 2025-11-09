@@ -6,7 +6,18 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::sync::Arc;
 
-/// 포지션 정보
+/// 거래 포지션 정보
+///
+/// 매수한 자산의 상태를 추적하고 트레일링 스톱 로직을 관리합니다.
+///
+/// # Examples
+///
+/// ```
+/// use upbit_trading_bot::trading::Position;
+///
+/// let mut position = Position::new("KRW-BTC".to_string(), 0.5, 50000.0);
+/// position.enable_trailing_if_profit(51000.0, 2.0);
+/// ```
 #[derive(Debug, Clone)]
 pub struct Position {
     pub ticker: String,
@@ -18,6 +29,17 @@ pub struct Position {
 }
 
 impl Position {
+    /// 새로운 포지션 생성
+    ///
+    /// # Arguments
+    ///
+    /// * `ticker` - 마켓 코드 (예: "KRW-BTC")
+    /// * `amount` - 보유 수량
+    /// * `avg_price` - 평균 매수가
+    ///
+    /// # Returns
+    ///
+    /// 초기화된 Position 인스턴스
     pub fn new(ticker: String, amount: f64, avg_price: f64) -> Self {
         Self {
             ticker,
@@ -30,6 +52,18 @@ impl Position {
     }
 
     /// 최고가 업데이트 및 트레일링 스톱 체크
+    ///
+    /// 현재 가격이 최고가를 경신하면 업데이트하고,
+    /// 트레일링 스톱이 활성화된 경우 매도 조건을 확인합니다.
+    ///
+    /// # Arguments
+    ///
+    /// * `current_price` - 현재 시장 가격
+    /// * `trailing_percent` - 최고가 대비 하락률 기준 (%)
+    ///
+    /// # Returns
+    ///
+    /// 트레일링 스톱 조건 충족 시 `true`, 아니면 `false`
     pub fn update_trailing_stop(&mut self, current_price: f64, trailing_percent: f64) -> bool {
         // 최고가 갱신
         if current_price > self.highest_price {
@@ -46,6 +80,13 @@ impl Position {
     }
 
     /// 목표 수익률 도달 시 트레일링 스톱 활성화
+    ///
+    /// 수익률이 설정된 기준을 초과하면 트레일링 스톱을 자동으로 활성화합니다.
+    ///
+    /// # Arguments
+    ///
+    /// * `current_price` - 현재 시장 가격
+    /// * `trigger_profit` - 트레일링 스톱 활성화 수익률 기준 (%)
     pub fn enable_trailing_if_profit(&mut self, current_price: f64, trigger_profit: f64) {
         let profit_rate = self.get_profit_rate(current_price);
         if !self.trailing_stop_enabled && profit_rate >= trigger_profit {
@@ -75,7 +116,28 @@ impl Position {
     }
 }
 
-/// 거래 전략
+/// 거래 전략 실행 엔진
+///
+/// Upbit API를 통해 실제 매수/매도를 실행하고
+/// 포지션 관리 및 리스크 관리를 수행합니다.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::sync::Arc;
+/// use upbit_trading_bot::trading::TradingStrategy;
+/// use upbit_trading_bot::analyzer::CandleAnalyzer;
+/// use upbit_trading_bot::config::Config;
+/// use upbit_trading_bot::upbit_client::UpbitClient;
+///
+/// # async fn example() -> anyhow::Result<()> {
+/// let config = Arc::new(Config::from_env()?);
+/// let client = Arc::new(UpbitClient::new("key".to_string(), "secret".to_string()));
+/// let analyzer = CandleAnalyzer::new(1.5, 0.5);
+/// let mut strategy = TradingStrategy::new(client, analyzer, config);
+/// # Ok(())
+/// # }
+/// ```
 pub struct TradingStrategy {
     client: Arc<UpbitClient>,
     analyzer: CandleAnalyzer,
@@ -97,7 +159,23 @@ impl TradingStrategy {
         }
     }
 
-    /// 매수 실행
+    /// 매수 신호 확인 및 실행
+    ///
+    /// 캔들 데이터를 분석하여 매수 조건을 확인하고,
+    /// 조건이 충족되면 시장가 매수 주문을 실행합니다.
+    ///
+    /// # Arguments
+    ///
+    /// * `ticker` - 매수할 마켓 코드 (예: "KRW-BTC")
+    /// * `candles` - 분석에 사용할 캔들 데이터 (최소 20개 권장)
+    ///
+    /// # Returns
+    ///
+    /// 매수 성공 시 `Ok(true)`, 조건 미충족 또는 실패 시 `Ok(false)`, 에러 발생 시 `Err`
+    ///
+    /// # Errors
+    ///
+    /// API 호출 실패, 네트워크 오류, 인증 오류 등
     pub async fn execute_buy(&mut self, ticker: &str, candles: &[Candle]) -> Result<bool> {
         // 이미 포지션이 있으면 매수하지 않음
         if self.position.is_some() {
@@ -187,7 +265,17 @@ impl TradingStrategy {
         }
     }
 
-    /// 매도 실행
+    /// 포지션 청산 (매도)
+    ///
+    /// 현재 보유한 포지션을 시장가로 매도합니다.
+    ///
+    /// # Arguments
+    ///
+    /// * `reason` - 매도 사유 (로깅용)
+    ///
+    /// # Returns
+    ///
+    /// 매도 성공 시 `Ok(true)`, 포지션 없음 또는 실패 시 `Ok(false)`, 에러 발생 시 `Err`
     pub async fn execute_sell(&mut self, reason: &str) -> Result<bool> {
         let position = match &self.position {
             Some(p) => p.clone(),
@@ -251,6 +339,13 @@ impl TradingStrategy {
     }
 
     /// 포지션 상태 확인 및 매도 판단
+    ///
+    /// 현재 포지션의 손익을 확인하고 익절/손절/트레일링 스톱 조건을 체크합니다.
+    /// 매도 조건 충족 시 자동으로 매도를 실행합니다.
+    ///
+    /// # Returns
+    ///
+    /// 매도 실행 시 `Ok(true)`, 홀딩 시 `Ok(false)`, 에러 발생 시 `Err`
     pub async fn check_position(&mut self) -> Result<bool> {
         let mut position = match &self.position {
             Some(p) => p.clone(),
@@ -313,5 +408,81 @@ impl TradingStrategy {
         );
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_position_creation() {
+        let position = Position::new("KRW-BTC".to_string(), 0.5, 50000.0);
+        assert_eq!(position.ticker, "KRW-BTC");
+        assert_eq!(position.amount, 0.5);
+        assert_eq!(position.avg_price, 50000.0);
+        assert_eq!(position.highest_price, 50000.0);
+        assert!(!position.trailing_stop_enabled);
+    }
+
+    #[test]
+    fn test_profit_rate_calculation() {
+        let position = Position::new("KRW-BTC".to_string(), 1.0, 50000.0);
+
+        // 10% 이익
+        let profit_rate = position.get_profit_rate(55000.0);
+        assert!((profit_rate - 10.0).abs() < 0.01);
+
+        // 5% 손실
+        let loss_rate = position.get_profit_rate(47500.0);
+        assert!((loss_rate - (-5.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_trailing_stop_activation() {
+        let mut position = Position::new("KRW-BTC".to_string(), 1.0, 50000.0);
+
+        // 초기 상태: 트레일링 스톱 비활성화
+        assert!(!position.trailing_stop_enabled);
+
+        // 2% 수익 달성 시 트레일링 스톱 활성화
+        position.enable_trailing_if_profit(51000.0, 2.0);
+        assert!(position.trailing_stop_enabled);
+        assert_eq!(position.highest_price, 51000.0);
+    }
+
+    #[test]
+    fn test_trailing_stop_trigger() {
+        let mut position = Position::new("KRW-BTC".to_string(), 1.0, 50000.0);
+
+        // 트레일링 스톱 활성화
+        position.trailing_stop_enabled = true;
+        position.highest_price = 55000.0;
+
+        // 최고가에서 2% 미만 하락 - 트리거 안됨
+        let should_sell = position.update_trailing_stop(54000.0, 2.0);
+        assert!(!should_sell);
+
+        // 최고가에서 2% 이상 하락 - 트리거
+        let should_sell = position.update_trailing_stop(53800.0, 2.0);
+        assert!(should_sell);
+    }
+
+    #[test]
+    fn test_highest_price_update() {
+        let mut position = Position::new("KRW-BTC".to_string(), 1.0, 50000.0);
+        position.trailing_stop_enabled = true;
+
+        // 최고가 갱신
+        position.update_trailing_stop(52000.0, 2.0);
+        assert_eq!(position.highest_price, 52000.0);
+
+        // 더 높은 가격으로 갱신
+        position.update_trailing_stop(53000.0, 2.0);
+        assert_eq!(position.highest_price, 53000.0);
+
+        // 낮은 가격은 갱신되지 않음
+        position.update_trailing_stop(52000.0, 2.0);
+        assert_eq!(position.highest_price, 53000.0);
     }
 }

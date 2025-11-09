@@ -1,6 +1,5 @@
 use crate::websocket::Candle;
 use crate::indicators::{IndicatorSignals, SignalType};
-use anyhow::Result;
 
 /// 포지션 상태
 #[derive(Debug, Clone, PartialEq)]

@@ -3,7 +3,6 @@ use crate::config::Config;
 use crate::websocket::Candle;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use std::collections::HashMap;
 
 /// 백테스팅 거래 기록
 #[derive(Debug, Clone)]

@@ -209,12 +209,14 @@ mod tests {
         (0..count)
             .map(|i| Candle {
                 ticker: "KRW-BTC".to_string(),
-                timestamp: Utc::now(),
+                start_time: Utc::now(),
                 open: 50000.0,
                 high: 51000.0,
                 low: 49000.0,
                 close: 50000.0 + (i as f64 * 100.0),
+                volume: 100.0,
                 acc_trade_price: 1000000.0,
+                tick_count: 100,
             })
             .collect()
     }

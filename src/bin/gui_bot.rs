@@ -96,7 +96,7 @@ async fn main() -> Result<()> {
     let strategy_bg = strategy.clone();
     let aggregator_bg = aggregator.clone();
     let dashboard_bg = dashboard_state.clone();
-    let client_bg = client.clone();
+    let _client_bg = client.clone();
 
     tokio::spawn(async move {
         let mut last_candle_check: HashMap<String, DateTime<Utc>> = HashMap::new();

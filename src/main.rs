@@ -1,5 +1,6 @@
 mod analyzer;
 mod config;
+mod indicators;
 mod trading;
 mod upbit_client;
 mod websocket;
@@ -137,10 +138,10 @@ async fn main() -> Result<()> {
                 completed_candle.acc_trade_price
             );
 
-            // 최근 완성된 캔들 조회 (최소 3개 필요)
-            let candles = aggregator.get_recent_candles(&ticker, 5).await;
+            // 최근 완성된 캔들 조회 (기술적 지표를 위해 최소 20개 필요)
+            let candles = aggregator.get_recent_candles(&ticker, 25).await;
 
-            if candles.len() >= 3 {
+            if candles.len() >= 20 {
                 // 전략 실행
                 let mut strat = strategy.write().await;
 

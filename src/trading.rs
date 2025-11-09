@@ -13,6 +13,8 @@ pub struct Position {
     pub amount: f64,
     pub avg_price: f64,
     pub timestamp: DateTime<Utc>,
+    pub highest_price: f64,  // 트레일링 스톱용 최고가
+    pub trailing_stop_enabled: bool,  // 트레일링 스톱 활성화 여부
 }
 
 impl Position {
@@ -22,6 +24,39 @@ impl Position {
             amount,
             avg_price,
             timestamp: Utc::now(),
+            highest_price: avg_price,  // 초기값은 매수가
+            trailing_stop_enabled: false,  // 초기에는 비활성화
+        }
+    }
+
+    /// 최고가 업데이트 및 트레일링 스톱 체크
+    pub fn update_trailing_stop(&mut self, current_price: f64, trailing_percent: f64) -> bool {
+        // 최고가 갱신
+        if current_price > self.highest_price {
+            self.highest_price = current_price;
+        }
+
+        // 트레일링 스톱이 활성화되어 있으면 체크
+        if self.trailing_stop_enabled {
+            let drop_from_high = ((self.highest_price - current_price) / self.highest_price) * 100.0;
+            return drop_from_high >= trailing_percent;
+        }
+
+        false
+    }
+
+    /// 목표 수익률 도달 시 트레일링 스톱 활성화
+    pub fn enable_trailing_if_profit(&mut self, current_price: f64, trigger_profit: f64) {
+        let profit_rate = self.get_profit_rate(current_price);
+        if !self.trailing_stop_enabled && profit_rate >= trigger_profit {
+            self.trailing_stop_enabled = true;
+            self.highest_price = current_price;
+            log::info!(
+                "[트레일링스톱] {} 활성화 | 현재가: {:.0}원 | 수익률: {:.2}%",
+                self.ticker,
+                current_price,
+                profit_rate
+            );
         }
     }
 
@@ -217,40 +252,31 @@ impl TradingStrategy {
 
     /// 포지션 상태 확인 및 매도 판단
     pub async fn check_position(&mut self) -> Result<bool> {
-        let position = match &self.position {
+        let mut position = match &self.position {
             Some(p) => p.clone(),
             None => return Ok(false),
         };
 
         let ticker = &position.ticker;
-
-        // 현재가 조회
         let current_price = self.client.get_current_price(ticker).await?;
 
-        // 포지션 분석
-        let (status, profit_rate, reason) = self.analyzer.analyze_position(
-            current_price,
-            position.avg_price,
-            self.config.target_profit,
-            self.config.stop_loss,
-        );
+        // 트레일링 스톱 (활성화 시)
+        if self.config.trailing_stop_enabled {
+            position.enable_trailing_if_profit(current_price, self.config.trailing_stop_trigger);
+            if position.update_trailing_stop(current_price, self.config.trailing_stop_percent) {
+                self.position = Some(position.clone());
+                return self.execute_sell(&format!("트레일링 스톱 (최고가 {}원 대비 {}% 하락)", position.highest_price, self.config.trailing_stop_percent)).await;
+            }
+            self.position = Some(position.clone());
+        }
 
-        // 포지션 상태 로그
+        let (status, profit_rate, reason) = self.analyzer.analyze_position(current_price, position.avg_price, self.config.target_profit, self.config.stop_loss);
         let profit_amount = position.get_profit_amount(current_price, self.config.upbit_fee);
-        log::info!(
-            "[포지션] {} | 평균가: {:.0}원 | 현재가: {:.0}원 | 수익: {:+.2}% ({:+.0}원)",
-            ticker,
-            position.avg_price,
-            current_price,
-            profit_rate,
-            profit_amount
-        );
+        log::info!("[포지션] {} | 평균가: {:.0}원 | 현재가: {:.0}원 | 수익: {:+.2}% ({:+.0}원)", ticker, position.avg_price, current_price, profit_rate, profit_amount);
 
-        // 익절 또는 손절
         if status == PositionStatus::TakeProfit || status == PositionStatus::StopLoss {
             return self.execute_sell(&reason).await;
         }
-
         Ok(false)
     }
 

@@ -14,6 +14,11 @@ pub struct Config {
     pub stop_loss: f64,          // 손절 라인 (%)
     pub trade_amount: f64,       // 거래 금액 비율 (0.0 ~ 1.0)
 
+    // 트레일링 스톱 설정
+    pub trailing_stop_enabled: bool,  // 트레일링 스톱 사용 여부
+    pub trailing_stop_trigger: f64,   // 트레일링 스톱 활성화 수익률 (%)
+    pub trailing_stop_percent: f64,   // 최고가 대비 하락률 (%)
+
     // 모니터링 설정
     pub candle_interval: u64,    // 캔들 간격 (분)
     pub min_volume_increase: f64, // 최소 거래량 증가율 (배수)
@@ -52,6 +57,21 @@ impl Config {
                 .unwrap_or_else(|_| "0.9".to_string())
                 .parse()
                 .context("TRADE_AMOUNT 파싱 실패")?,
+
+            trailing_stop_enabled: env::var("TRAILING_STOP_ENABLED")
+                .unwrap_or_else(|_| "true".to_string())
+                .parse()
+                .unwrap_or(true),
+
+            trailing_stop_trigger: env::var("TRAILING_STOP_TRIGGER")
+                .unwrap_or_else(|_| "2.0".to_string())
+                .parse()
+                .context("TRAILING_STOP_TRIGGER 파싱 실패")?,
+
+            trailing_stop_percent: env::var("TRAILING_STOP_PERCENT")
+                .unwrap_or_else(|_| "1.0".to_string())
+                .parse()
+                .context("TRAILING_STOP_PERCENT 파싱 실패")?,
 
             candle_interval: env::var("CANDLE_INTERVAL")
                 .unwrap_or_else(|_| "5".to_string())

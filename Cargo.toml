@@ -26,6 +26,9 @@ futures = "0.3"
 async-trait = "0.1"
 base64 = "0.21"
 jsonwebtoken = "9.2"
+eframe = "0.27"
+egui = "0.27"
+egui_plot = "0.27"
 
 [profile.release]
 opt-level = 3

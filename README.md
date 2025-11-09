@@ -8,6 +8,7 @@ Upbit 암호화폐 자동매매 시스템 - Rust로 구현한 고성능 트레�
 - WebSocket API를 통한 실시간 데이터 수신
 - 전체 KRW 마켓 코인 동시 모니터링
 - 5분봉 캔들 데이터 실시간 집계 및 분석
+- **GUI 대시보드** - 실시간 자산/포지션/거래내역 시각화
 
 ### 매수 전략 (개선된 버전)
 다음 조건을 **모두** 만족할 때 매수:
@@ -18,16 +19,22 @@ Upbit 암호화폐 자동매매 시스템 - Rust로 구현한 고성능 트레�
 4. **평균 거래량 대비**: 평균 거래량 대비 1.5배 이상 증가
 5. **과매수 필터링**: 단기간 10% 이상 급등한 종목 제외 (고점 매수 방지)
 6. **반등 패턴 선호**: 하락 후 반등하는 패턴에 가산점
+7. **기술적 지표**: RSI, MACD, Bollinger Bands 통합 분석
 
 ### 매도 전략
 - **익절**: 목표 수익률 달성 시 (기본값: +3%)
 - **손절**: 손절 라인 도달 시 (기본값: -2%)
+- **트레일링 스톱**: 수익 보호 (2% 수익 시 활성화)
 - 실시간 포지션 모니터링 (10초 간격)
 
 ### 리스크 관리
 - 최대 동시 보유 포지션: 1개
 - 최소 KRW 잔액 유지
 - 수수료 자동 반영 (0.05%)
+
+### 백테스팅
+- 과거 데이터로 전략 성능 테스트
+- 승률, 평균 수익, 최대 손실 통계
 
 ## 시스템 요구사항
 
@@ -68,13 +75,19 @@ TRADE_AMOUNT=0.9       # 거래 금액 비율 (90%)
 ### 3. 빌드 및 실행
 
 ```bash
-# 개발 모드
-cargo build
-cargo run
+# CLI 버전 (터미널에서 실행)
+cargo run --bin upbit-trading-bot
+
+# GUI 버전 (대시보드 창 실행)
+cargo run --bin gui-bot
 
 # 릴리스 모드 (최적화)
 cargo build --release
-./target/release/upbit-trading-bot
+./target/release/upbit-trading-bot  # CLI
+./target/release/gui-bot             # GUI
+
+# 백테스팅
+cargo run --example backtest_example
 ```
 
 ## Upbit API 키 발급
@@ -91,12 +104,20 @@ cargo build --release
 ```
 upbit-trading-bot/
 ├── src/
-│   ├── main.rs              # 메인 로직
+│   ├── main.rs              # CLI 버전 메인
+│   ├── lib.rs               # 라이브러리 엔트리
 │   ├── config.rs            # 설정 관리
 │   ├── upbit_client.rs      # Upbit API 클라이언트
 │   ├── websocket.rs         # WebSocket 및 캔들 집계
 │   ├── analyzer.rs          # 캔들 데이터 분석
-│   └── trading.rs           # 거래 전략 실행
+│   ├── indicators.rs        # 기술적 지표 (RSI, MACD, BB)
+│   ├── trading.rs           # 거래 전략 실행
+│   ├── backtest.rs          # 백테스팅 엔진
+│   ├── gui.rs               # GUI 대시보드
+│   └── bin/
+│       └── gui_bot.rs       # GUI 버전 메인
+├── examples/
+│   └── backtest_example.rs  # 백테스팅 예제
 ├── Cargo.toml               # Rust 의존성 설정
 ├── .env                     # 환경 변수 (API 키)
 └── README.md                # 프로젝트 문서

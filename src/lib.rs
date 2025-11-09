@@ -1,6 +1,7 @@
 pub mod analyzer;
 pub mod backtest;
 pub mod config;
+pub mod gui;
 pub mod indicators;
 pub mod trading;
 pub mod upbit_client;

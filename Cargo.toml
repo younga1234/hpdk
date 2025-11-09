@@ -13,6 +13,10 @@ path = "src/lib.rs"
 name = "upbit-trading-bot"
 path = "src/main.rs"
 
+[[bin]]
+name = "gui-bot"
+path = "src/bin/gui_bot.rs"
+
 [dependencies]
 tokio = { version = "1.35", features = ["full"] }
 tokio-tungstenite = "0.21"

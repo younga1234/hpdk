@@ -3,6 +3,7 @@ pub mod backtest;
 pub mod config;
 pub mod gui;
 pub mod indicators;
+pub mod market_conditions;
 pub mod orderbook;
 pub mod pump_detector;
 pub mod trading;

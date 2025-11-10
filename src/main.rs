@@ -1,9 +1,14 @@
 pub mod analyzer;
 pub mod backtest;
 pub mod config;
+pub mod gui;
 pub mod indicators;
+pub mod market_conditions;
+pub mod orderbook;
+pub mod pump_detector;
 pub mod trading;
 pub mod upbit_client;
+pub mod volume_profile;
 pub mod websocket;
 
 use analyzer::CandleAnalyzer;

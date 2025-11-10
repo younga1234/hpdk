@@ -1,5 +1,6 @@
 use crate::analyzer::{CandleAnalyzer, PositionStatus};
 use crate::config::Config;
+use crate::market_conditions::{MarketCondition, MarketConditionAnalyzer, TradingStatistics};
 use crate::upbit_client::UpbitClient;
 use crate::websocket::Candle;
 use anyhow::Result;
@@ -143,6 +144,7 @@ pub struct TradingStrategy {
     analyzer: CandleAnalyzer,
     config: Arc<Config>,
     position: Option<Position>,
+    market_analyzer: MarketConditionAnalyzer,
 }
 
 impl TradingStrategy {
@@ -156,6 +158,7 @@ impl TradingStrategy {
             analyzer,
             config,
             position: None,
+            market_analyzer: MarketConditionAnalyzer::new(),
         }
     }
 
@@ -179,6 +182,31 @@ impl TradingStrategy {
     pub async fn execute_buy(&mut self, ticker: &str, candles: &[Candle]) -> Result<bool> {
         // 이미 포지션이 있으면 매수하지 않음
         if self.position.is_some() {
+            return Ok(false);
+        }
+
+        // ⭐ 실전 안전장치 1: 거래 가능 여부 확인
+        let restriction = self.market_analyzer.can_trade();
+        if !restriction.can_trade {
+            log::warn!("[거래제한] {}", restriction.reason);
+            return Ok(false);
+        }
+
+        // ⭐ 실전 안전장치 2: 시장 상황 분석
+        let market_condition = self.market_analyzer.analyze_market_condition(candles);
+        if market_condition == MarketCondition::Bearish {
+            log::info!("[시장분석] 약세장 - 매수 보류");
+            return Ok(false);
+        }
+        if market_condition == MarketCondition::HighVolatility {
+            log::warn!("[시장분석] 고변동성 - 매수 위험");
+            return Ok(false);
+        }
+
+        // ⭐ 실전 안전장치 3: 안전 점수 확인
+        let safety_score = self.market_analyzer.calculate_safety_score();
+        if safety_score < 50 {
+            log::warn!("[안전점수] {}점 - 매수 보류 (최소 50점 필요)", safety_score);
             return Ok(false);
         }
 
@@ -369,6 +397,20 @@ impl TradingStrategy {
                         profit_amount
                     );
 
+                    // ⭐ 거래 결과 기록
+                    self.market_analyzer.record_trade(profit_rate);
+
+                    // 통계 출력
+                    let stats = self.market_analyzer.get_statistics();
+                    log::info!(
+                        "[거래통계] 승률: {:.1}%, 평균수익: {:+.2}%, 연속손실: {}, 일일거래: {}, 안전점수: {}",
+                        stats.win_rate,
+                        stats.avg_profit,
+                        stats.consecutive_losses,
+                        stats.daily_trade_count,
+                        stats.safety_score
+                    );
+
                     // 포지션 초기화
                     self.position = None;
                     Ok(true)
@@ -433,6 +475,16 @@ impl TradingStrategy {
     /// 현재 포지션의 티커 반환
     pub fn get_position_ticker(&self) -> Option<String> {
         self.position.as_ref().map(|p| p.ticker.clone())
+    }
+
+    /// 거래 통계 조회
+    pub fn get_trading_statistics(&self) -> TradingStatistics {
+        self.market_analyzer.get_statistics()
+    }
+
+    /// 안전 점수 조회
+    pub fn get_safety_score(&self) -> u8 {
+        self.market_analyzer.calculate_safety_score()
     }
 
     /// 잔액 정보 출력

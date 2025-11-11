@@ -32,6 +32,12 @@ pub struct MarketConditionAnalyzer {
     daily_trade_count: usize,
     /// 마지막 거래 시간
     last_trade_time: Option<DateTime<Utc>>,
+    /// 초기 자산 (Maximum Drawdown 계산용)
+    initial_balance: Option<f64>,
+    /// 최대 자산 (Peak)
+    peak_balance: Option<f64>,
+    /// 마지막 일일 리셋 날짜
+    last_reset_date: Option<String>,
 }
 
 impl MarketConditionAnalyzer {
@@ -42,6 +48,74 @@ impl MarketConditionAnalyzer {
             consecutive_losses: 0,
             daily_trade_count: 0,
             last_trade_time: None,
+            initial_balance: None,
+            peak_balance: None,
+            last_reset_date: None,
+        }
+    }
+
+    /// 초기 자산 설정
+    pub fn set_initial_balance(&mut self, balance: f64) {
+        if self.initial_balance.is_none() {
+            self.initial_balance = Some(balance);
+            self.peak_balance = Some(balance);
+            log::info!("[초기자산] {:.0}원 설정", balance);
+        }
+    }
+
+    /// 현재 자산 업데이트 (Peak 추적)
+    pub fn update_current_balance(&mut self, balance: f64) {
+        if let Some(peak) = self.peak_balance {
+            if balance > peak {
+                self.peak_balance = Some(balance);
+                log::debug!("[최고자산] {:.0}원 갱신", balance);
+            }
+        } else {
+            self.peak_balance = Some(balance);
+        }
+    }
+
+    /// Maximum Drawdown 계산 (%)
+    pub fn calculate_drawdown(&self, current_balance: f64) -> Option<f64> {
+        self.peak_balance.map(|peak| {
+            if peak > 0.0 {
+                ((peak - current_balance) / peak) * 100.0
+            } else {
+                0.0
+            }
+        })
+    }
+
+    /// Drawdown이 위험 수준인지 확인
+    pub fn check_drawdown_limit(&self, current_balance: f64, max_drawdown_percent: f64) -> TradingRestriction {
+        if let Some(drawdown) = self.calculate_drawdown(current_balance) {
+            if drawdown >= max_drawdown_percent {
+                return TradingRestriction {
+                    can_trade: false,
+                    reason: format!(
+                        "최대 손실 한도 초과 (Drawdown: {:.2}%, 한도: {:.2}%)",
+                        drawdown, max_drawdown_percent
+                    ),
+                };
+            }
+        }
+        TradingRestriction {
+            can_trade: true,
+            reason: "정상".to_string(),
+        }
+    }
+
+    /// 일일 통계 자동 리셋 (자정 체크)
+    pub fn auto_reset_daily_if_needed(&mut self) {
+        let today = Utc::now().format("%Y-%m-%d").to_string();
+
+        if let Some(last_date) = &self.last_reset_date {
+            if last_date != &today {
+                self.reset_daily_counter();
+                self.last_reset_date = Some(today);
+            }
+        } else {
+            self.last_reset_date = Some(today);
         }
     }
 
@@ -245,7 +319,16 @@ impl MarketConditionAnalyzer {
             consecutive_losses: self.consecutive_losses,
             daily_trade_count: self.daily_trade_count,
             safety_score: self.calculate_safety_score(),
+            current_drawdown: None, // 외부에서 설정
+            peak_balance: self.peak_balance,
         }
+    }
+
+    /// 통계 정보 (자산 포함)
+    pub fn get_statistics_with_balance(&self, current_balance: f64) -> TradingStatistics {
+        let mut stats = self.get_statistics();
+        stats.current_drawdown = self.calculate_drawdown(current_balance);
+        stats
     }
 }
 
@@ -266,6 +349,8 @@ pub struct TradingStatistics {
     pub consecutive_losses: usize,
     pub daily_trade_count: usize,
     pub safety_score: u8,
+    pub current_drawdown: Option<f64>,
+    pub peak_balance: Option<f64>,
 }
 
 #[cfg(test)]

@@ -26,6 +26,7 @@ pub struct Config {
     // 리스크 관리
     pub max_position: usize,     // 최대 동시 보유 포지션 수
     pub min_krw_balance: f64,    // 최소 보유 원화 잔액
+    pub max_drawdown_percent: f64, // 최대 손실 한도 (%)
 
     // 상수
     pub upbit_fee: f64,          // Upbit 수수료 (0.05%)
@@ -96,6 +97,11 @@ impl Config {
                 .unwrap_or_else(|_| "10000".to_string())
                 .parse()
                 .context("MIN_KRW_BALANCE 파싱 실패")?,
+
+            max_drawdown_percent: env::var("MAX_DRAWDOWN_PERCENT")
+                .unwrap_or_else(|_| "15.0".to_string())
+                .parse()
+                .context("MAX_DRAWDOWN_PERCENT 파싱 실패")?,
 
             upbit_fee: 0.0005, // 0.05%
         };
@@ -178,6 +184,14 @@ impl Config {
             log::warn!("최소 KRW 잔액이 낮습니다 ({:.0}원). Upbit 최소 주문 금액은 5,000원입니다.", self.min_krw_balance);
         }
 
+        // 최대 손실 한도 검증
+        if self.max_drawdown_percent <= 0.0 {
+            anyhow::bail!("최대 손실 한도는 0보다 커야 합니다 (현재: {}%)", self.max_drawdown_percent);
+        }
+        if self.max_drawdown_percent > 50.0 {
+            log::warn!("최대 손실 한도가 매우 높습니다 ({}%). 권장: 10-20%", self.max_drawdown_percent);
+        }
+
         Ok(())
     }
 
@@ -194,6 +208,7 @@ impl Config {
 최소 가격 변화율: {}%
 최대 포지션 수: {}
 최소 KRW 잔액: {:.0}원
+최대 손실 한도: {}%
 ========================
 "#,
             self.target_profit,
@@ -203,7 +218,8 @@ impl Config {
             self.min_volume_increase,
             self.min_price_change,
             self.max_position,
-            self.min_krw_balance
+            self.min_krw_balance,
+            self.max_drawdown_percent
         )
     }
 }
@@ -228,6 +244,7 @@ mod tests {
             min_price_change: 0.5,
             max_position: 1,
             min_krw_balance: 10000.0,
+            max_drawdown_percent: 15.0,
             upbit_fee: 0.0005,
         };
 
@@ -250,6 +267,7 @@ mod tests {
             min_price_change: 0.5,
             max_position: 1,
             min_krw_balance: 10000.0,
+            max_drawdown_percent: 15.0,
             upbit_fee: 0.0005,
         };
 
@@ -272,6 +290,7 @@ mod tests {
             min_price_change: 0.5,
             max_position: 1,
             min_krw_balance: 10000.0,
+            max_drawdown_percent: 15.0,
             upbit_fee: 0.0005,
         };
 
@@ -297,6 +316,7 @@ mod tests {
             min_price_change: 0.5,
             max_position: 1,
             min_krw_balance: 10000.0,
+            max_drawdown_percent: 15.0,
             upbit_fee: 0.0005,
         };
 

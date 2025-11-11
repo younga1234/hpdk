@@ -19,7 +19,7 @@ use std::sync::Arc;
 /// let mut position = Position::new("KRW-BTC".to_string(), 0.5, 50000.0);
 /// position.enable_trailing_if_profit(51000.0, 2.0);
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Position {
     pub ticker: String,
     pub amount: f64,
@@ -180,8 +180,28 @@ impl TradingStrategy {
     ///
     /// API 호출 실패, 네트워크 오류, 인증 오류 등
     pub async fn execute_buy(&mut self, ticker: &str, candles: &[Candle]) -> Result<bool> {
+        // 일일 통계 자동 리셋
+        self.market_analyzer.auto_reset_daily_if_needed();
+
         // 이미 포지션이 있으면 매수하지 않음
         if self.position.is_some() {
+            return Ok(false);
+        }
+
+        // ⭐ 실전 안전장치 0: Maximum Drawdown 체크
+        let current_balance = self.calculate_total_balance().await?;
+        self.market_analyzer.update_current_balance(current_balance);
+
+        let drawdown_check = self.market_analyzer.check_drawdown_limit(
+            current_balance,
+            self.config.max_drawdown_percent
+        );
+        if !drawdown_check.can_trade {
+            log::error!("[비상정지] {}", drawdown_check.reason);
+            // 비상 정지: 포지션이 있으면 즉시 청산
+            if self.position.is_some() {
+                self.emergency_stop(&drawdown_check.reason).await?;
+            }
             return Ok(false);
         }
 
@@ -285,6 +305,13 @@ impl TradingStrategy {
                 }
 
                 if amount > 0.0 {
+                    // 슬리피지 추적
+                    let slippage = self.calculate_slippage(current_price, avg_price);
+                    if slippage.abs() > 0.5 {
+                        log::warn!("[슬리피지] {:.3}% (예상: {:.0}원, 체결: {:.0}원)",
+                            slippage, current_price, avg_price);
+                    }
+
                     // 포지션 생성
                     self.position = Some(Position::new(ticker.to_string(), amount, avg_price));
 
@@ -295,6 +322,11 @@ impl TradingStrategy {
                         amount,
                         avg_price * amount
                     );
+
+                    // 포지션 상태 저장
+                    if let Err(e) = self.save_position() {
+                        log::warn!("포지션 저장 실패: {}", e);
+                    }
 
                     log::info!("✅ 매수 완료: {}", ticker);
                     Ok(true)
@@ -413,6 +445,12 @@ impl TradingStrategy {
 
                     // 포지션 초기화
                     self.position = None;
+
+                    // 포지션 상태 저장 (삭제)
+                    if let Err(e) = self.save_position() {
+                        log::warn!("포지션 상태 파일 삭제 실패: {}", e);
+                    }
+
                     Ok(true)
                 } else {
                     log::error!("{}: 매도 체결 확인 실패 (타임아웃)", ticker);
@@ -487,23 +525,99 @@ impl TradingStrategy {
         self.market_analyzer.calculate_safety_score()
     }
 
+    /// 포지션 상태를 파일에 저장
+    pub fn save_position(&self) -> Result<()> {
+        if let Some(position) = &self.position {
+            let json = serde_json::to_string_pretty(position)?;
+            std::fs::write("position_state.json", json)?;
+            log::info!("포지션 상태 저장: {}", position.ticker);
+        } else {
+            // 포지션이 없으면 파일 삭제
+            if std::path::Path::new("position_state.json").exists() {
+                std::fs::remove_file("position_state.json")?;
+                log::info!("포지션 상태 파일 삭제");
+            }
+        }
+        Ok(())
+    }
+
+    /// 파일에서 포지션 상태 복구
+    pub fn load_position(&mut self) -> Result<()> {
+        if std::path::Path::new("position_state.json").exists() {
+            let json = std::fs::read_to_string("position_state.json")?;
+            let position: Position = serde_json::from_str(&json)?;
+            self.position = Some(position.clone());
+            log::info!("포지션 상태 복구: {} (평균가: {:.0}원, 수량: {:.8})",
+                position.ticker, position.avg_price, position.amount);
+        } else {
+            log::info!("복구할 포지션 없음");
+        }
+        Ok(())
+    }
+
+    /// 슬리피지 계산 (예상가 vs 실제 체결가)
+    pub fn calculate_slippage(&self, expected_price: f64, actual_price: f64) -> f64 {
+        ((actual_price - expected_price) / expected_price) * 100.0
+    }
+
+    /// 비상 정지: 모든 포지션 즉시 청산
+    pub async fn emergency_stop(&mut self, reason: &str) -> Result<bool> {
+        if self.position.is_none() {
+            return Ok(false);
+        }
+
+        log::error!("🚨 비상 정지 발동: {}", reason);
+        log::error!("🚨 모든 포지션 즉시 청산 시작");
+
+        let result = self.execute_sell(&format!("비상정지 - {}", reason)).await?;
+
+        if result {
+            log::error!("🚨 비상 청산 완료");
+        } else {
+            log::error!("🚨 비상 청산 실패 - 수동 확인 필요!");
+        }
+
+        Ok(result)
+    }
+
+    /// 총 자산 계산 (KRW + 포지션 평가액)
+    pub async fn calculate_total_balance(&self) -> Result<f64> {
+        let krw_balance = self.client.get_balance("KRW").await?;
+        let mut total = krw_balance;
+
+        if let Some(position) = &self.position {
+            let current_price = self.client.get_current_price(&position.ticker).await?;
+            let position_value = position.amount * current_price;
+            total += position_value;
+        }
+
+        Ok(total)
+    }
+
+    /// 초기 자산 설정 (봇 시작 시 1회 호출)
+    pub async fn initialize_balance(&mut self) -> Result<()> {
+        let initial_balance = self.calculate_total_balance().await?;
+        self.market_analyzer.set_initial_balance(initial_balance);
+        Ok(())
+    }
+
     /// 잔액 정보 출력
     pub async fn print_balance(&self) -> Result<()> {
         let krw_balance = self.client.get_balance("KRW").await?;
+        let total_asset = self.calculate_total_balance().await?;
 
-        let mut total_asset = krw_balance;
-
-        if let Some(position) = &self.position {
-            let ticker = &position.ticker;
-            let current_price = self.client.get_current_price(ticker).await?;
-            let position_value = position.amount * current_price;
-            total_asset += position_value;
-        }
+        // Drawdown 계산
+        let drawdown_str = if let Some(drawdown) = self.market_analyzer.calculate_drawdown(total_asset) {
+            format!("| Drawdown: {:.2}%", drawdown)
+        } else {
+            String::new()
+        };
 
         log::info!(
-            "[잔액] KRW: {:.0}원 | 총 자산: {:.0}원",
+            "[잔액] KRW: {:.0}원 | 총 자산: {:.0}원 {}",
             krw_balance,
-            total_asset
+            total_asset,
+            drawdown_str
         );
 
         Ok(())
